@@ -1,5 +1,11 @@
-// Thermostat 0.1 POC
+/*
+This is an experimental attempt at a slightly smarter thermostat for my home
 
+There are currently 2 inputs, an up and down button
+These shift the center point up and down
+*/
+
+// Arduino convention is byte, but could be uint8_t or unsigned char
 const byte tempsens  = 0;
 const byte buttonUp  = 2;
 const byte buttonDwn = 3;
@@ -13,9 +19,12 @@ const int tmp36offset = 50;
 
 const float hysteresis = 0.5;
 
+// these values get used in the loop
 byte mode = cool;
-byte setpoint = 70;
+byte centerpoint = 69;
+byte offset = 5;
 byte prevUp, prevDwn;
+
 
 void setup() {
     // setup pins
@@ -27,31 +36,37 @@ void setup() {
     Serial.begin(9600);
 }
 
+
 void loop() {
-    // get if we are pushing any buttons
+    // get if we are pushing any buttons when the loop begins
     byte stateUp, stateDwn;
     stateUp  = digitalRead(buttonUp);
     stateDwn = digitalRead(buttonDwn);
 
-    // adjust the setpoint if so desired
+    // adjust the centerpoint if so desired
     if ( (stateUp == LOW) && (stateDwn == LOW) ) {
+        /* This is some manual code if both Up and Down are
+
         // change from cool to warm, off??
-        if (mode == cool) {
-            mode = heat;
+         if (mode == cool) {
+             mode = heat;
         } else {
             mode = cool;
-        }
+        } */
     } else if ((stateUp == LOW) && !(prevUp == LOW)) {
-        // increase temperature setting for new button press
-        setpoint++;
+        // increase temperature setting for a new button press
+        centerpoint++;
     } else if ((stateDwn == LOW) && !(prevDwn == LOW)) {
-        // decrease temperature setting for new button press
-        setpoint--;
+        // decrease temperature setting for a new button press
+        centerpoint--;
     }
 
-    // store button states
+    // store button states for next loop and set our temperatures for easy reading
     prevUp  = stateUp;
     prevDwn = stateDwn;
+    byte coolpoint = centerpoint + offset;
+    byte heatpoint = centerpoint - offset;
+
 
     // get the temperature
     // method 1 integer math, loses precision in the typical house range?
@@ -66,25 +81,27 @@ void loop() {
     voltage = analogRead(tempsens)*0.004882814;
     tempC   = (voltage - 0.5) * 100.0;
     tempF   = tempC * (9.0/5.0) + 32.0;
-    
+
     // set the drive on or off
-    switch (mode) {
-        case cool:
-            if (tempF > setpoint) {
-              digitalWrite(drive, HIGH);
-            } else if (tempF < (setpoint-hysteresis)) {
-              digitalWrite(drive, LOW);
-            }
-            break;
-        case heat:
-            if (tempF < setpoint) {
-                digitalWrite(drive, HIGH);
-            } else if (tempF > (setpoint+hysteresis)) {
-                digitalWrite(drive, LOW);
-            }
-            break;
-    }   
-    
+    // TODO: not sure yet how to turn on AC or heater (2 pins?)
+    if (tempF > coolpoint) {
+        mode = cool;
+        digitalWrite(drive, HIGH);
+    } else if (tempF < (coolpoint - hysteresis)) {
+        mode = cool;
+        digitalWrite(drive, LOW);
+    } else if (tempF < heatpoint) {
+        mode = heat;
+        digitalWrite(drive, HIGH);
+    } else if (tempF < (heatpoint + hysteresis)) {
+        mode = heat;
+        digitalWrite(drive, LOW);
+    } else {
+        // do nothing
+        mode = off;
+        digitalWrite(drive, LOW);
+    }
+
     // print the current state
     //Serial.print(F("adc0: "));
     //Serial.print(adc0);
@@ -94,9 +111,9 @@ void loop() {
     Serial.print(tempC);
     Serial.print(F("   deg F: "));
     Serial.print(tempF);
-    Serial.print(F("   setpoint:"));
-    Serial.println(setpoint);
-    
+    Serial.print(F("   centerpoint:"));
+    Serial.println(centerpoint);
+
     // slow the loop slightly
     delay(50); //ms
 }
