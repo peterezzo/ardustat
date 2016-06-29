@@ -6,111 +6,93 @@ These shift the center point up and down
 */
 
 // Arduino convention is byte, but could be uint8_t or unsigned char
+// pins
 const byte tempsens  = 0;
 const byte buttonUp  = 2;
 const byte buttonDwn = 3;
-const byte drive     = 13;
+const byte relayFan  = 11;
+const byte relayAC   = 12;
+const byte relayHeat = 13;
 
+// numeric to text shortcuts
 const byte off  = 0;
 const byte cool = 1;
 const byte heat = 2;
-const int tempscale   = 500;
-const int tmp36offset = 50;
+const byte fan  = 3;
 
+// parameters
 const float hysteresis = 0.5;
+const float offset = 5.0;
 
 // these values get used in the loop
-byte mode = cool;
-byte centerpoint = 69;
-byte offset = 5;
-byte prevUp, prevDwn;
+byte centerpoint, mode, prevUp, prevDwn;
 
 
 void setup() {
     // setup pins
+    pinMode(tempsens,  INPUT);
     pinMode(buttonUp,  INPUT);
     pinMode(buttonDwn, INPUT);
-    pinMode(drive,     OUTPUT);
+    pinMode(relayFan,  OUTPUT);
+    pinMode(relayAC,   OUTPUT);
+    pinMode(relayHeat, OUTPUT);
 
     // start serial monitor
     Serial.begin(9600);
+
+    // when we boot up set a reasonable mode and temperature
+    centerpoint = 69;
+    mode = cool;
 }
 
 
 void loop() {
-    // get if we are pushing any buttons when the loop begins
-    byte stateUp, stateDwn;
-    stateUp  = digitalRead(buttonUp);
-    stateDwn = digitalRead(buttonDwn);
+    // check if we are pushing any buttons when the loop begins
+    byte stateUp  = digitalRead(buttonUp);
+    byte stateDwn = digitalRead(buttonDwn);
 
-    // adjust the centerpoint if so desired
+    // if this is first time button is pressed, move the setpoint
+    // if both buttons are pressed, toggle system on and off
     if ( (stateUp == LOW) && (stateDwn == LOW) ) {
-        /* This is some manual code if both Up and Down are
-
-        // change from cool to warm, off??
-         if (mode == cool) {
-             mode = heat;
-        } else {
+        if (mode == off) {
             mode = cool;
-        } */
+        } else {
+            mode = off;
+        }
     } else if ((stateUp == LOW) && !(prevUp == LOW)) {
-        // increase temperature setting for a new button press
         centerpoint++;
     } else if ((stateDwn == LOW) && !(prevDwn == LOW)) {
-        // decrease temperature setting for a new button press
         centerpoint--;
     }
 
-    // store button states for next loop and set our temperatures for easy reading
+    // store current button states in global vars for next loop through
     prevUp  = stateUp;
     prevDwn = stateDwn;
-    byte coolpoint = centerpoint + offset;
-    byte heatpoint = centerpoint - offset;
 
+    // calculate the desired and current temperatures
+    // TODO: use floating point math until i can get a handle on integer scaling
+    // speed is not really a big deal here
+    float coolpoint = centerpoint + offset;
+    float heatpoint = centerpoint - offset;
+    float temperature = getTempF(tempsens);
 
-    // get the temperature
-    // method 1 integer math, loses precision in the typical house range?
-    // take in the ADC value, int scale voltage to 5V=500
-    // using a TMP36 which is 10mV/C with a +0.5V offset
-    //int adc0, tempC
-    //float tempF;
-    //adc0    = analogRead(tempsens);
-    //tempC   = ( ((adc0*2) + 1) * tempscale + 1024) / 2048 - tmp36offset;
-    // method 2 use much slower floats
-    float voltage, tempC, tempF;
-    voltage = analogRead(tempsens)*0.004882814;
-    tempC   = (voltage - 0.5) * 100.0;
-    tempF   = tempC * (9.0/5.0) + 32.0;
-
-    // set the drive on or off
-    // TODO: not sure yet how to turn on AC or heater (2 pins?)
-    if (tempF > coolpoint) {
-        mode = cool;
-        digitalWrite(drive, HIGH);
-    } else if (tempF < (coolpoint - hysteresis)) {
-        mode = cool;
-        digitalWrite(drive, LOW);
-    } else if (tempF < heatpoint) {
-        mode = heat;
-        digitalWrite(drive, HIGH);
-    } else if (tempF < (heatpoint + hysteresis)) {
-        mode = heat;
-        digitalWrite(drive, LOW);
-    } else {
-        // do nothing
-        mode = off;
-        digitalWrite(drive, LOW);
+    // we used a 1 degree swing around our desired temperature
+    // firing the relays is done in driveUnit function
+    if (temperature > (coolpoint + hysteresis)) {
+        driveUnit(cool);
+    } else if (temperature < (heatpoint - hysteresis)) {
+        driveUnit(heat);
+    } else if (temperature < (coolpoint - hysteresis)) {
+        driveUnit(off);
+    } else if (temperature < (heatpoint + hysteresis)) {
+        driveUnit(off);
     }
 
-    // print the current state
+    // print the current state for debugging
     //Serial.print(F("adc0: "));
     //Serial.print(adc0);
-    Serial.print(F("   voltage: "));
-    Serial.print(voltage);
-    Serial.print(F("   deg C: "));
-    Serial.print(tempC);
     Serial.print(F("   deg F: "));
-    Serial.print(tempF);
+    Serial.print(temperature);
     Serial.print(F("   centerpoint:"));
     Serial.println(centerpoint);
 
@@ -118,7 +100,58 @@ void loop() {
     delay(50); //ms
 }
 
-/*float getVoltage(int pin) {
-    // this was taken from sparkfun
-    return (analogRead(pin) * 0.004882814);
-}*/
+
+float getTempF(int pin) {
+    // get the temperature
+    // method 1 integer math, loses precision in the typical house range?
+    // take in the ADC value, int scale voltage to 5V=500
+    // using a TMP36 which is 10mV/C with a +0.5V offset
+    //int adc0, tempC
+    //int tempscale   = 500;
+    //int tmp36offset = 50;
+    //float tempF;
+    //adc0    = analogRead(pin);
+    //tempC   = ( ((adc0*2) + 1) * tempscale + 1024) / 2048 - tmp36offset;
+
+    // method 2 use slower floats but simpler
+    // multiplier value taken from sparkfun
+    float voltage, tempC;
+    voltage = analogRead(pin)*0.004882814;
+    tempC   = (voltage - 0.5) * 100.0;
+
+    return (tempC * (9.0/5.0) + 32.0);
+}
+
+
+void driveUnit(byte unit) {
+   // this function controls outputs that control relays
+   // heat and cool spin up the fan 1 minute before engaging
+   // call this recursively to do so
+
+   // wiring notes
+   // red wire - 24V hot
+   // blue wire - 24V common
+   // green wire - fan
+   // yellow wire - cooling
+   // white wire - heating
+   switch(unit){
+    case cool:
+        driveUnit(fan);
+        delay(60000); //ms
+        digitalWrite(relayAC, HIGH);
+        break;
+    case heat:
+        driveUnit(fan);
+        delay(60000); //ms
+        digitalWrite(relayHeat, HIGH);
+        break;
+    case fan:
+        digitalWrite(relayFan, HIGH);
+        break;
+    default:
+        digitalWrite(relayFan, LOW);
+        digitalWrite(relayAC, LOW);
+        digitalWrite(relayHeat, LOW);
+        break;
+    }
+}
