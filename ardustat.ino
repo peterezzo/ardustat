@@ -5,64 +5,107 @@ There are currently 2 inputs, an up and down button
 These shift the center point up and down
 */
 
-// Arduino convention is byte, but could be uint8_t or unsigned char
+#include <EEPROM.h>
+
+// Arduino convention is usually byte, but even arduino.h uses uint8_t
 // pins
-const byte tempsens  = 0;
-const byte buttonUp  = 2;
-const byte buttonDwn = 3;
-const byte relayFan  = 11;
-const byte relayAC   = 12;
-const byte relayHeat = 13;
+const uint8_t analogTempSens = 0;
+const uint8_t buttonUp = 2;
+const uint8_t buttonDwn = 3;
+const uint8_t relayFan = 11;
+const uint8_t relayAC = 12;
+const uint8_t relayHeat = 13;
 
 // numeric to text shortcuts
-const byte off  = 0;
-const byte cool = 1;
-const byte heat = 2;
-const byte fan  = 3;
+const uint8_t off = 0;
+const uint8_t on = 1;
+const uint8_t cool = 2;
+const uint8_t heat = 3;
+const uint8_t fan = 4;
+const uint8_t shutdown = 5;
+const uint8_t cycle = 6;
 
-// parameters
-const float hysteresis = 0.5;
-const float offset = 5.0;
+// eeprom storage locations
+const uint8_t eepCheckVal = 0xAA;
+const int eepCheckAddr = 0;
+const int eepModeAddr = 1;
+const int eepCenterpointAddr = 2;
 
-// these values get used in the loop
-byte centerpoint, mode, prevUp, prevDwn;
+// temperature parameters scaled as degree F x 10
+const int defaultCenterpoint = 690; // 69.0
+const int hysteresis = 5; // 0.5
+const int offset = 50; // 5
 
+// HVAC system parameters
+const int fanDelay = 6000; // ms
 
-void setup() {
-    // setup pins
-    pinMode(tempsens,  INPUT);
-    pinMode(buttonUp,  INPUT);
-    pinMode(buttonDwn, INPUT);
-    pinMode(relayFan,  OUTPUT);
-    pinMode(relayAC,   OUTPUT);
+// global variables used in the loops
+int centerpoint;
+uint8_t mode;
+
+void setup(void) {
+    // variable declaration
+    uint8_t check;
+
+    // setup digital pins
+    pinMode(buttonUp, INPUT); // is default
+    pinMode(buttonDwn, INPUT); // is default
+    pinMode(relayFan, OUTPUT);
+    pinMode(relayAC, OUTPUT);
     pinMode(relayHeat, OUTPUT);
 
     // start serial monitor
     Serial.begin(9600);
 
-    // when we boot up set a reasonable mode and temperature
-    centerpoint = 69;
-    mode = cool;
+    // get mode and temperature settings from eeprom or default values
+    // we store a basic check pattern in first bit
+    // if it's there, load the previous settings
+    // otherwise use the defaults and write them to EEPROM
+    // note that mode only stores either "on" or "off"
+    check = EEPROM.read(eepCheckAddr);
+    if (check == eepCheckVal) {
+        Serial.println(F("Using mode and temperature from EEPROM"));
+        mode = EEPROM.read(eepModeAddr);
+        centerpoint = getEEPROMint(eepCenterpointAddr);
+    } else {
+        Serial.println(F("Using mode and temperature from defaults"));
+        mode = on;
+        centerpoint = defaultCenterpoint;
+
+        // EEPROM.clear();
+        setEEPROMbyte(eepCheckAddr, eepCheckVal);
+        setEEPROMbyte(eepModeAddr, mode);
+        setEEPROMint(eepCenterpointAddr, centerpoint);
+    }
 }
 
 
-void loop() {
+void loop(void) {
+    // variable declaration
+    static uint8_t prevUp = HIGH, prevDwn = HIGH;
+    uint8_t stateUp, stateDwn;
+    int coolOn, coolOff, heatOn, heatOff, temperature;
+
     // check if we are pushing any buttons when the loop begins
-    byte stateUp  = digitalRead(buttonUp);
-    byte stateDwn = digitalRead(buttonDwn);
+    stateUp  = digitalRead(buttonUp);
+    stateDwn = digitalRead(buttonDwn);
 
     // if this is first time button is pressed, move the setpoint
-    // if both buttons are pressed, toggle system on and off
-    if ( (stateUp == LOW) && (stateDwn == LOW) ) {
+    // if both buttons are pressed, toggle system on and off and save to eeprom
+    // TODO: write this as an interrupt?
+    if ((stateUp == LOW) && (stateDwn == LOW) && (prevUp != LOW) && (prevDwn != LOW)) {
         if (mode == off) {
-            mode = cool;
+            mode = on;
         } else {
             mode = off;
         }
-    } else if ((stateUp == LOW) && !(prevUp == LOW)) {
-        centerpoint++;
-    } else if ((stateDwn == LOW) && !(prevDwn == LOW)) {
-        centerpoint--;
+        setEEPROMbyte(eepModeAddr, mode);
+    } else if ((stateUp == LOW) && (prevUp != LOW)) {
+        centerpoint += 10; // +1.0 F
+        setEEPROMint(eepCenterpointAddr, centerpoint);
+    } else if ((stateDwn == LOW) && (prevDwn != LOW)) {
+        centerpoint -= 10; // -1.0 F
+        setEEPROMint(eepCenterpointAddr, centerpoint);
     }
 
     // store current button states in global vars for next loop through
@@ -70,27 +113,31 @@ void loop() {
     prevDwn = stateDwn;
 
     // calculate the desired and current temperatures
-    // TODO: use floating point math until i can get a handle on integer scaling
-    // speed is not really a big deal here
-    float coolpoint = centerpoint + offset;
-    float heatpoint = centerpoint - offset;
-    float temperature = getTempF(tempsens);
+    // we used a 1 degree swing around our desired temperature (hysteresis)
+    coolOn = centerpoint + offset + hysteresis;
+    coolOff = centerpoint + offset - hysteresis;
+    heatOn = centerpoint - offset + hysteresis;
+    heatOff = centerpoint - offset - hysteresis;
+    temperature = getTempF(analogTempSens);
 
-    // we used a 1 degree swing around our desired temperature
+    // determine what mode we should be in
     // firing the relays is done in driveUnit function
-    if (temperature > (coolpoint + hysteresis)) {
-        driveUnit(cool);
-    } else if (temperature < (heatpoint - hysteresis)) {
-        driveUnit(heat);
-    } else if (temperature < (coolpoint - hysteresis)) {
-        driveUnit(off);
-    } else if (temperature < (heatpoint + hysteresis)) {
-        driveUnit(off);
+    if (mode != off) {
+        if ((temperature > coolOn) && (mode != cool)) {
+            mode = cool;
+        } else if ((temperature < heatOn) && (mode != heat)) {
+            mode = heat;
+        } else if ((temperature > heatOff) && (mode == heat)) {
+            mode = shutdown;
+        } else if ((temperature < coolOff) && (mode == cool)) {
+            mode = shutdown;
+        } else {
+            mode = cycle;
+        }
     }
+    driveUnit(mode);
 
     // print the current state for debugging
-    //Serial.print(F("adc0: "));
-    //Serial.print(adc0);
     Serial.print(F("   deg F: "));
     Serial.print(temperature);
     Serial.print(F("   centerpoint:"));
@@ -101,8 +148,15 @@ void loop() {
 }
 
 
-float getTempF(int pin) {
-    // get the temperature
+int getTempF(int pin) {
+    /* get the temperature
+    Args:
+        pin (int):  the Arduino analog input pin to read from
+    Returns:
+        temp (int):  scaled Farenheit temperature (10x float)
+    */
+    float voltage, tempC, tempF;
+
     // method 1 integer math, loses precision in the typical house range?
     // take in the ADC value, int scale voltage to 5V=500
     // using a TMP36 which is 10mV/C with a +0.5V offset
@@ -115,43 +169,105 @@ float getTempF(int pin) {
 
     // method 2 use slower floats but simpler
     // multiplier value taken from sparkfun
-    float voltage, tempC;
     voltage = analogRead(pin)*0.004882814;
-    tempC   = (voltage - 0.5) * 100.0;
 
-    return (tempC * (9.0/5.0) + 32.0);
+    tempC = (voltage - 0.5) * 100.0;
+    tempF = (tempC * (9.0/5.0) + 32.0);
+
+    Serial.print(F("voltage: "));
+    Serial.print(voltage);
+    Serial.print(F("   deg C: "));
+    Serial.print(tempC);
+
+    return int(tempF * 10);
 }
 
 
-void driveUnit(byte unit) {
-   // this function controls outputs that control relays
-   // heat and cool spin up the fan 1 minute before engaging
-   // call this recursively to do so
+void driveUnit(uint8_t unit) {
+    /*
+    this function controls outputs that control relays
+    heat and cool spin up the fan 1 minute before engaging
+    call this recursively to do so
+    shutdown leaves the fan on 1 minute after
 
-   // wiring notes
-   // red wire - 24V hot
-   // blue wire - 24V common
-   // green wire - fan
-   // yellow wire - cooling
-   // white wire - heating
-   switch(unit){
-    case cool:
-        driveUnit(fan);
-        delay(60000); //ms
-        digitalWrite(relayAC, HIGH);
-        break;
-    case heat:
-        driveUnit(fan);
-        delay(60000); //ms
-        digitalWrite(relayHeat, HIGH);
-        break;
-    case fan:
-        digitalWrite(relayFan, HIGH);
-        break;
-    default:
-        digitalWrite(relayFan, LOW);
-        digitalWrite(relayAC, LOW);
-        digitalWrite(relayHeat, LOW);
-        break;
+    Args:
+        unit (uint8_t): which HVAC function to activate, or off for all off
+    Returns:
+        none
+
+    wiring notes:
+    red wire - 24V hot
+    blue wire - 24V common
+    green wire - fan
+    yellow wire - cooling
+    white wire - heating
+    */
+    static unsigned long timeFan = 0;
+    unsigned long timeCurrent = millis();
+
+    switch(unit) {
+        case cool:
+            if ((timeCurrent - timeFan) < fanDelay) {
+                driveUnit(fan);
+            } else {
+                if (digitalRead(relayAC) != HIGH) {
+                    digitalWrite(relayAC, HIGH);
+                }
+            }
+            break;
+        case heat:
+            if ((timeCurrent - timeFan) < fanDelay) {
+                driveUnit(fan);
+            } else {
+                if (digitalRead(relayHeat) != HIGH) {
+                    digitalWrite(relayHeat, HIGH);
+                }
+            }
+            break;
+        case fan:
+            if (digitalRead(relayFan) != HIGH) {
+                timeFan = timeCurrent;
+                digitalWrite(relayFan, HIGH);
+            }
+            break;
+        case shutdown:
+
+        default:
+            digitalWrite(relayFan, LOW);
+            digitalWrite(relayAC, LOW);
+            digitalWrite(relayHeat, LOW);
+            break;
+    }
+}
+
+
+int getEEPROMint(int address) {
+    uint8_t hiByte, loByte;
+
+    hiByte = EEPROM.read(address);
+    loByte = EEPROM.read(address + 1);
+
+    return word(hiByte, loByte);
+}
+
+
+void setEEPROMint(int address, int value) {
+    uint8_t hiByte, loByte;
+
+    hiByte = highByte(value);
+    loByte = lowByte(value);
+
+    if (EEPROM.read(address) != hiByte) {
+        EEPROM.write(address, hiByte);
+    }
+    if (EEPROM.read(address + 1) != loByte) {
+        EEPROM.write(address + 1, loByte);
+    }
+}
+
+
+void setEEPROMbyte(int address, uint8_t value) {
+    if (EEPROM.read(address) != value) {
+        EEPROM.write(address, value);
     }
 }
