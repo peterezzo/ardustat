@@ -5,6 +5,7 @@ There are currently 2 inputs, an up and down button
 These shift the center point up and down
 */
 
+#define SERIALDEBUG
 #include <EEPROM.h>
 
 // Arduino convention is usually byte, but even arduino.h uses uint8_t
@@ -54,8 +55,10 @@ void setup(void) {
     pinMode(relayAC, OUTPUT);
     pinMode(relayHeat, OUTPUT);
 
+#if defined(SERIALDEBUG)
     // start serial monitor
     Serial.begin(9600);
+#endif
 
     // get mode and temperature settings from eeprom or default values
     // we store a basic check pattern in first bit
@@ -63,11 +66,15 @@ void setup(void) {
     // otherwise use the defaults and write them to EEPROM
     // note that mode only stores either "on" or "off"
     if (eepCheckVal == EEPROM.read(eepCheckAddr)) {
+#if defined(SERIALDEBUG)
         Serial.println(F("Using mode and temperature from EEPROM"));
+#endif
         mode = EEPROM.read(eepModeAddr);
         centerpoint = getEEPROMint(eepCenterpointAddr);
     } else {
+#if defined(SERIALDEBUG)
         Serial.println(F("Using mode and temperature from defaults"));
+#endif
         mode = on;
         centerpoint = defaultCenterpoint;
 
@@ -136,11 +143,13 @@ void loop(void) {
     }
     driveUnit(mode);
 
+#if defined(SERIALDEBUG)
     // print the current state for debugging
     Serial.print(F("   deg F: "));
     Serial.print(temperature);
     Serial.print(F("   centerpoint:"));
     Serial.println(centerpoint);
+#endif
 
     // slow the loop slightly
     delay(50); //ms
@@ -173,10 +182,12 @@ int getTempF(int pin) {
     tempC = (voltage - 0.5) * 100.0;
     tempF = (tempC * (9.0/5.0) + 32.0);
 
+#if defined(SERIALDEBUG)
     Serial.print(F("voltage: "));
     Serial.print(voltage);
     Serial.print(F("   deg C: "));
     Serial.print(tempC);
+#endif
 
     return int(tempF * 10.0);
 }
@@ -255,6 +266,17 @@ void driveUnit(uint8_t unit) {
             digitalWrite(relayAC, LOW);
             digitalWrite(relayHeat, LOW);
     }
+
+#if defined(SERIALDEBUG)
+    Serial.print(F("   mode "));
+    Serial.print(mode);
+    Serial.print(F("   unit "));
+    Serial.print(unit);
+    Serial.print(F("   timeCur "));
+    Serial.print(timeCurrent);
+    Serial.print(F("   timeFan "));
+    Serial.print(timeFanOn);
+#endif
 }
 
 
