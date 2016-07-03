@@ -37,16 +37,16 @@ const int hysteresis = 5; // 0.5
 const int offset = 50; // 5
 
 // HVAC system parameters
-const int fanDelay = 6000; // ms
+const unsigned long fanDelay = 60000; // ms, 1 minute
+const unsigned long cycleOn = 900000; // ms, 15 minutes
+const unsigned long cycleOff = 2700000; // ms, 45 minutes
+
 
 // global variables used in the loops
 int centerpoint;
 uint8_t mode;
 
 void setup(void) {
-    // variable declaration
-    uint8_t check;
-
     // setup digital pins
     pinMode(buttonUp, INPUT); // is default
     pinMode(buttonDwn, INPUT); // is default
@@ -62,8 +62,7 @@ void setup(void) {
     // if it's there, load the previous settings
     // otherwise use the defaults and write them to EEPROM
     // note that mode only stores either "on" or "off"
-    check = EEPROM.read(eepCheckAddr);
-    if (check == eepCheckVal) {
+    if (eepCheckVal == EEPROM.read(eepCheckAddr)) {
         Serial.println(F("Using mode and temperature from EEPROM"));
         mode = EEPROM.read(eepModeAddr);
         centerpoint = getEEPROMint(eepCenterpointAddr);
@@ -92,7 +91,7 @@ void loop(void) {
 
     // if this is first time button is pressed, move the setpoint
     // if both buttons are pressed, toggle system on and off and save to eeprom
-    // TODO: write this as an interrupt?
+    // write this as an interrupt someday?
     if ((stateUp == LOW) && (stateDwn == LOW) && (prevUp != LOW) && (prevDwn != LOW)) {
         if (mode == off) {
             mode = on;
@@ -179,7 +178,7 @@ int getTempF(int pin) {
     Serial.print(F("   deg C: "));
     Serial.print(tempC);
 
-    return int(tempF * 10);
+    return int(tempF * 10.0);
 }
 
 
@@ -193,7 +192,7 @@ void driveUnit(uint8_t unit) {
     Args:
         unit (uint8_t): which HVAC function to activate, or off for all off
     Returns:
-        none
+        None
 
     wiring notes:
     red wire - 24V hot
@@ -202,71 +201,103 @@ void driveUnit(uint8_t unit) {
     yellow wire - cooling
     white wire - heating
     */
-    static unsigned long timeFan = 0;
+    static unsigned long timeFanOn = 0;
     unsigned long timeCurrent = millis();
 
     switch(unit) {
         case cool:
-            if ((timeCurrent - timeFan) < fanDelay) {
-                driveUnit(fan);
-            } else {
+            // we must always be sure that fan is on before AC
+            driveUnit(fan);
+            // dwell for fanDelay ms if turning it on first time
+            if ((timeCurrent - timeFanOn) > fanDelay) {
+                // only write to pin if not already on
                 if (digitalRead(relayAC) != HIGH) {
                     digitalWrite(relayAC, HIGH);
                 }
             }
             break;
         case heat:
-            if ((timeCurrent - timeFan) < fanDelay) {
-                driveUnit(fan);
-            } else {
+            // heat operates exactly the same way as cool
+            driveUnit(fan);
+            if ((timeCurrent - timeFanOn) > fanDelay) {
                 if (digitalRead(relayHeat) != HIGH) {
                     digitalWrite(relayHeat, HIGH);
                 }
             }
             break;
         case fan:
+             // turn on fan and record time that we do so, only if fan not on
             if (digitalRead(relayFan) != HIGH) {
-                timeFan = timeCurrent;
+                timeFanOn = timeCurrent;
                 digitalWrite(relayFan, HIGH);
             }
             break;
         case shutdown:
-
-        default:
-            digitalWrite(relayFan, LOW);
+            // turn off other units, then purge vents for fanDelay ms
+            // shutdown is only ever the mode set for exactly 1 loop run
+            // it is followed by cycle, abuse the timing state var and let
+            // cycle shut off the fan after fanDelay time
+            timeFanOn = (timeCurrent - cycleOn) + fanDelay;
             digitalWrite(relayAC, LOW);
             digitalWrite(relayHeat, LOW);
             break;
+        case cycle:
+            // run the fan periodically
+            if ((timeCurrent - timeFanOn) > cycleOff) {
+                driveUnit(fan);
+            } else if ((timeCurrent - timeFanOn) > cycleOn) {
+                digitalWrite(relayFan, LOW);
+            }
+            break;
+        default:
+            // this is used for "off" and "on" and anything broken
+            digitalWrite(relayFan, LOW);
+            digitalWrite(relayAC, LOW);
+            digitalWrite(relayHeat, LOW);
     }
 }
 
 
 int getEEPROMint(int address) {
-    uint8_t hiByte, loByte;
+    /*
+    This function retrieves an int stored in EEPROM starting at address provided
 
-    hiByte = EEPROM.read(address);
-    loByte = EEPROM.read(address + 1);
-
-    return word(hiByte, loByte);
+    Arguments:
+        address (int):  EEPROM byte to begin reading first byte from
+    Returns:
+        value (int):  integer stored in the EEPROM
+    */
+    return word(EEPROM.read(address), EEPROM.read(address + 1));
 }
 
 
 void setEEPROMint(int address, int value) {
-    uint8_t hiByte, loByte;
+    /*
+    This function stores an int in EEPROM starting at address provided,
+    but only if value is different than presently stored
 
-    hiByte = highByte(value);
-    loByte = lowByte(value);
-
-    if (EEPROM.read(address) != hiByte) {
-        EEPROM.write(address, hiByte);
-    }
-    if (EEPROM.read(address + 1) != loByte) {
-        EEPROM.write(address + 1, loByte);
-    }
+    Arguments:
+        address (int):  EEPROM byte to begin storage at
+        value (int):  integer value to store
+    Returns:
+        None
+    */
+    setEEPROMbyte(address, highByte(value));
+    setEEPROMbyte(address + 1, lowByte(value));
 }
 
 
 void setEEPROMbyte(int address, uint8_t value) {
+    /*
+    This function stores a byte in EEPROM at address provided,
+    but only if value is different than presently stored
+
+    Arguments:
+        address (int):  EEPROM byte to begin storage at
+        value (uint8_t):  byte value to store
+    Returns:
+        None
+    */
     if (EEPROM.read(address) != value) {
         EEPROM.write(address, value);
     }
