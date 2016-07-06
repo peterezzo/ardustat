@@ -6,7 +6,8 @@ These shift the center point up and down
 */
 
 #define SERIALDEBUG
-#include <EEPROM.h>
+#include "getseteeprom.h"
+
 
 // Arduino convention is usually byte, but even arduino.h uses uint8_t
 // pins
@@ -42,7 +43,6 @@ const unsigned long fanDelay = 60000; // ms, 1 minute
 const unsigned long cycleOn = 900000; // ms, 15 minutes
 const unsigned long cycleOff = 2700000; // ms, 45 minutes
 
-
 // global variables used in the loops
 int centerpoint;
 uint8_t mode;
@@ -58,23 +58,23 @@ void setup(void) {
 #if defined(SERIALDEBUG)
     // start serial monitor
     Serial.begin(9600);
-#endif
+#endif /* SERIALDEBUG */
 
     // get mode and temperature settings from eeprom or default values
     // we store a basic check pattern in first bit
     // if it's there, load the previous settings
     // otherwise use the defaults and write them to EEPROM
     // note that mode only stores either "on" or "off"
-    if (eepCheckVal == EEPROM.read(eepCheckAddr)) {
+    if (eepCheckVal == getEEPROMbyte(eepCheckAddr)) {
 #if defined(SERIALDEBUG)
         Serial.println(F("Using mode and temperature from EEPROM"));
 #endif
-        mode = EEPROM.read(eepModeAddr);
+        mode = getEEPROMbyte(eepModeAddr);
         centerpoint = getEEPROMint(eepCenterpointAddr);
     } else {
 #if defined(SERIALDEBUG)
         Serial.println(F("Using mode and temperature from defaults"));
-#endif
+#endif /* SERIALDEBUG */
         mode = on;
         centerpoint = defaultCenterpoint;
 
@@ -119,7 +119,6 @@ void loop(void) {
     prevDwn = stateDwn;
 
     // calculate the desired and current temperatures
-    // we used a 1 degree swing around our desired temperature (hysteresis)
     coolOn = centerpoint + offset + hysteresis;
     coolOff = centerpoint + offset - hysteresis;
     heatOn = centerpoint - offset + hysteresis;
@@ -149,7 +148,7 @@ void loop(void) {
     Serial.print(temperature);
     Serial.print(F("   centerpoint:"));
     Serial.println(centerpoint);
-#endif
+#endif /* SERIALDEBUG */
 
     // slow the loop slightly
     delay(50); //ms
@@ -187,7 +186,7 @@ int getTempF(int pin) {
     Serial.print(voltage);
     Serial.print(F("   deg C: "));
     Serial.print(tempC);
-#endif
+#endif /* SERIALDEBUG */
 
     return int(tempF * 10.0);
 }
@@ -276,51 +275,5 @@ void driveUnit(uint8_t unit) {
     Serial.print(timeCurrent);
     Serial.print(F("   timeFan "));
     Serial.print(timeFanOn);
-#endif
-}
-
-
-int getEEPROMint(int address) {
-    /*
-    This function retrieves an int stored in EEPROM starting at address provided
-
-    Arguments:
-        address (int):  EEPROM byte to begin reading first byte from
-    Returns:
-        value (int):  integer stored in the EEPROM
-    */
-    return word(EEPROM.read(address), EEPROM.read(address + 1));
-}
-
-
-void setEEPROMint(int address, int value) {
-    /*
-    This function stores an int in EEPROM starting at address provided,
-    but only if value is different than presently stored
-
-    Arguments:
-        address (int):  EEPROM byte to begin storage at
-        value (int):  integer value to store
-    Returns:
-        None
-    */
-    setEEPROMbyte(address, highByte(value));
-    setEEPROMbyte(address + 1, lowByte(value));
-}
-
-
-void setEEPROMbyte(int address, uint8_t value) {
-    /*
-    This function stores a byte in EEPROM at address provided,
-    but only if value is different than presently stored
-
-    Arguments:
-        address (int):  EEPROM byte to begin storage at
-        value (uint8_t):  byte value to store
-    Returns:
-        None
-    */
-    if (EEPROM.read(address) != value) {
-        EEPROM.write(address, value);
-    }
+#endif /* SERIALDEBUG */
 }
